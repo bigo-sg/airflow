@@ -1,1 +1,4 @@
+1. Compile fuse_dfs:
+bash g.sh
+2. Mount hdfs to local path:
 sudo bash fuse_dfs_wrapper.sh ro hdfs://nncluster ./test
