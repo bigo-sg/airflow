@@ -47,6 +47,10 @@ from airflow import configuration
 from airflow.configuration import run_command
 from airflow.utils.timeout import timeout
 from hdfs import InsecureClient, HdfsError
+from airflow.models import DagBag
+
+login_required = airflow.login.login_required
+current_user = airflow.login.current_user
 
 _log = LoggingMixin().log
 
@@ -398,6 +402,7 @@ def parse_dag_file(filepath):
 
 @csrf.exempt
 @api_experimental.route('/upload_dag', methods=['POST'])
+@login_required
 def upload_dag():
     '''
     upload a dag file. a dag file can only contain one dag , and the dag name is
@@ -441,6 +446,23 @@ def upload_dag():
         response = jsonify(error="{}".format(err))
         response.status_code = 500
         return response
+
+    if dag.default_args['owner'] != current_user.user.username and not current_user.is_superuser():
+        err = 'invalid dag owner'
+        _log.error(err)
+        response = jsonify(error="{}".format(err))
+        response.status_code = 500
+        return response
+    dagbags = DagBag()
+    if dag.dag_id in dagbags.dags:
+        prev_dag = dagbags.get_dag(dag.dag_id)
+        if prev_dag.default_args['owner'] != current_user.user.username and not current_user.is_superuser():
+
+            err = 'you are not the dag owner'
+            _log.error(err)
+            response = jsonify(error="{}".format(err))
+            response.status_code = 500
+            return response
 
     webhdfs_url = configuration.conf.get('webserver', 'webhdfs_url')
     webhdfs_user = configuration.conf.get('webserver', 'webhdfs_user')
