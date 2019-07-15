@@ -35,6 +35,18 @@ from airflow.utils.log.logging_mixin import LoggingMixin
 from airflow.www.app import csrf
 from airflow import models
 from airflow.utils.db import create_session
+import hashlib
+import imp
+import importlib
+import os
+import sys
+from flask import Flask,render_template,request,redirect,url_for
+from werkzeug.utils import secure_filename
+import os
+from airflow import configuration
+from airflow.configuration import run_command
+from airflow.utils.timeout import timeout
+from hdfs import InsecureClient, HdfsError
 
 _log = LoggingMixin().log
 
@@ -352,3 +364,93 @@ def delete_pool(name):
         return response
     else:
         return jsonify(pool.to_json())
+
+
+def parse_dag_file(filepath):
+    from airflow.models import DAG
+    found_dags = []
+    if filepath is None or not os.path.isfile(filepath):
+        return found_dags
+    mods = []
+    org_mod_name, _ = os.path.splitext(os.path.split(filepath)[-1])
+    mod_name = ('unusual_prefix_' +
+                hashlib.sha1(filepath.encode('utf-8')).hexdigest() +
+                '_' + org_mod_name)
+    if mod_name in sys.modules:
+        del sys.modules[mod_name]
+    with timeout(configuration.conf.getint('core', "DAGBAG_IMPORT_TIMEOUT")):
+        try:
+            m = imp.load_source(mod_name, filepath)
+            mods.append(m)
+        except Exception as e:
+            _log.error(str(e))
+            return found_dags
+    for m in mods:
+        for dag in list(m.__dict__.values()):
+            if isinstance(dag, DAG):
+                if not dag.full_filepath:
+                    dag.full_filepath = filepath
+                    if dag.fileloc != filepath:
+                        dag.fileloc = filepath
+                found_dags.append(dag)
+    return found_dags
+
+
+@csrf.exempt
+@api_experimental.route('/upload_dag', methods=['POST'])
+def upload_dag():
+    '''
+    upload a dag file. a dag file can only contain one dag , and the dag name is
+    the same as dag file name.
+    '''
+    if 'file' not in request.files:
+        err = 'empty files in request'
+        _log.error(err)
+        response = jsonify(error="{}".format(err))
+        response.status_code = 500
+        return response
+
+    finfo = request.files['file']
+    save_path = configuration.conf.get('webserver', 'upload_file_directory')
+    if save_path is None:
+        err = 'save directory not configured'
+        _log.error(err)
+        response = jsonify(error="{}".format(err))
+        response.status_code = 500
+        return response
+
+    file_path = os.path.join(save_path, secure_filename(finfo.filename))
+    finfo.save(file_path)
+    found_dags = parse_dag_file(file_path)
+    if len(found_dags) == 0:
+        err = "not found any dag in the file"
+        _log.error(err)
+        response = jsonify(error="{}".format(err))
+        response.status_code = 500
+        return response
+    elif len(found_dags) > 1:
+        err = 'more than one dag in the dag file'
+        _log.error(err)
+        response = jsonify(error="{}".format(err))
+        response.status_code = 500
+        return response
+    dag = found_dags[0]
+    if dag.dag_id + ".py" != finfo.filename:
+        err = 'file name must be the same as dag id'
+        _log.error(err)
+        response = jsonify(error="{}".format(err))
+        response.status_code = 500
+        return response
+
+    webhdfs_url = configuration.conf.get('webserver', 'webhdfs_url')
+    webhdfs_user = configuration.conf.get('webserver', 'webhdfs_user')
+    hdfs_dags_path = configuration.conf.get('webserver', 'hdfs_dags_path')
+    client = InsecureClient(webhdfs_url, user=webhdfs_user)
+    client.upload(hdfs_path=hdfs_dags_path, local_path=file_path, overwrite=True,n_threads=1)
+
+    os.remove(file_path)
+    
+    response = jsonify(error = 'upload OK')
+    response.status_code = 200
+    return response       
+
