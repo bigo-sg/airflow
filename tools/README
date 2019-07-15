@@ -2,3 +2,5 @@
 bash g.sh
 2. Mount hdfs to local path:
 sudo bash fuse_dfs_wrapper.sh ro hdfs://nncluster ./test
+
+NOTE: config.h maybe get from protobuf2.5.0
