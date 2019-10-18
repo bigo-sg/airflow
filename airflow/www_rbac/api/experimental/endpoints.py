@@ -76,9 +76,12 @@ def trigger_dag(dag_id):
             response.status_code = 400
 
             return response
-
+    replace_microseconds = True
+    if 'replace_microseconds' in data and data['replace_microseconds'] is not None:
+        if data['replace_microseconds'] == 'False':
+            replace_microseconds = False
     try:
-        dr = trigger.trigger_dag(dag_id, run_id, conf, execution_date)
+        dr = trigger.trigger_dag(dag_id, run_id, conf, execution_date, replace_microseconds)
     except AirflowException as err:
         _log.error(err)
         response = jsonify(error="{}".format(err))
